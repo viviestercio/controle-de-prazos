@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <title>Controle de Prazos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="manifest" href="manifest.json">
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(() => console.log('Service Worker registrado com sucesso'))
+        .catch(error => console.error('Erro ao registrar Service Worker:', error));
+    }
+  </script>
+  <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/main.min.css" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.8/main.min.js"></script>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #fff0f5;
+      color: #333;
+    }
+    h1 {
+      color: #c71585;
+      text-align: center;
+    }
+    form, .search-bar {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      box-shadow: 0 0 10px #ffc0cb55;
+    }
+    th, td {
+      border: 1px solid #f8cce0;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #ffc0cb;
+      color: #333;
+    }
+    input, select, button {
+      padding: 8px;
+      margin: 5px;
+      border-radius: 6px;
+      border: 1px solid #ff99cc;
+      background: #ffe0ec;
+      color: #c71585;
+    }
+    .alert {
+      background: #ffe6ec;
+      color: #c71585;
+      padding: 10px;
+      margin-top: 10px;
+      text-align: center;
+      border-radius: 6px;
+      border: 1px dashed #ff99cc;
+    }
+    .ok-btn { background-color: #ffb6c1; }
+    .delete-btn { background-color: #ff69b4; }
+    .edit-btn { background-color: #ff85a2; }
+    .clear-btn { background-color: #ff3366; }
+    .ok-btn, .delete-btn, .edit-btn, .clear-btn {
+      color: white;
+      border: none;
+      padding: 6px 10px;
+      cursor: pointer;
+      margin-right: 4px;
+      border-radius: 5px;
+    }
+    .editing {
+      outline: 2px dashed #ff69b4;
+      background: #fff8fc;
+    }
+  </style>
+</head>
+<body>
+<h1>Controle de Prazos</h1>
+<form id="prazoForm">
+  <input type="text" id="descricao" placeholder="Descrição" required />
+  <select id="categoria">
+    <option value="Licença">Licença</option>
+    <option value="Laudo">Laudo</option>
+    <option value="Férias">Férias</option>
+    <option value="Certificado">Certificado</option>
+    <option value="Contrato">Contrato</option>
+  </select>
+  <input type="date" id="vencimento" required />
+  <button type="submit">Salvar</button>
+  <input type="file" id="importarCSV" accept=".csv" />
+  <button type="button" class="clear-btn" onclick="apagarTudo()">Apagar Tudo</button>
+  <button type="button" onclick="exportarCSV()">Exportar CSV</button>
+</form>
+
+<div class="search-bar">
+  <input type="text" id="filtro" placeholder="Buscar por descrição ou categoria..." />
+</div>
+
+<div id="alerta" class="alert" style="display: none;"></div>
+<table id="tabela">
+  <thead>
+    <tr>
+      <th>Descrição</th>
+      <th>Categoria</th>
+      <th>Data de Vencimento</th>
+      <th>Status</th>
+      <th>Ações</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+<div id="calendar" style="margin-top: 30px;"></div>
+<script>
+function statusPrazo(vencimento, finalizado) {
+  const hoje = new Date();
+  const venc = new Date(vencimento);
+  const diff = Math.ceil((venc - hoje) / (1000 * 60 * 60 * 24));
+  if (finalizado) return '<b style="color:mediumvioletred">OK</b>';
+  if (diff < 0) return '<b style="color:#cc0066">Vencido</b>';
+  if (diff <= 7) return '<b style="color:#ff1493">Próximo do vencimento</b>';
+  return '<span style="color:#d87093">A vencer</span>';
+}
+
+let indiceEdicao = null;
+function salvarPrazos(p) { localStorage.setItem("prazos", JSON.stringify(p)); }
+function carregarPrazos() { return JSON.parse(localStorage.getItem("prazos") || "[]"); }
+function renderTabela() {
+  const tabela = document.querySelector("#tabela tbody");
+  const campoFiltro = document.getElementById("filtro");
+  const alerta = document.getElementById("alerta");
+  tabela.innerHTML = "";
+  const hoje = new Date();
+  const textoFiltro = campoFiltro.value.toLowerCase();
+  const prazos = carregarPrazos();
+  prazos.forEach((item, index) => {
+    const venc = new Date(item.vencimento);
+    const corresponde = item.descricao.toLowerCase().includes(textoFiltro) || item.categoria.toLowerCase().includes(textoFiltro);
+    if (!corresponde) return;
+    const linha = tabela.insertRow();
+    if (indiceEdicao === index) linha.classList.add("editing");
+    linha.innerHTML = `
+      <td>${item.descricao}</td>
+      <td>${item.categoria}</td>
+      <td>${venc.toLocaleDateString("pt-BR")}</td>
+      <td>${statusPrazo(item.vencimento, item.finalizado)}</td>
+      <td>
+        <button class="ok-btn" onclick="marcarOk(${index})">OK</button>
+        <button class="edit-btn" onclick="editarPrazo(${index})">Editar</button>
+        <button class="delete-btn" onclick="apagarUm(${index})">Excluir</button>
+      </td>
+    `;
+  });
+  renderizarCalendario();
+}
+function editarPrazo(index) {
+  const item = carregarPrazos()[index];
+  document.getElementById("descricao").value = item.descricao;
+  document.getElementById("categoria").value = item.categoria;
+  document.getElementById("vencimento").value = item.vencimento;
+  indiceEdicao = index;
+  renderTabela();
+}
+function apagarUm(index) {
+  const prazos = carregarPrazos();
+  prazos.splice(index, 1);
+  salvarPrazos(prazos);
+  renderTabela();
+}
+function marcarOk(index) {
+  const prazos = carregarPrazos();
+  prazos[index].finalizado = true;
+  salvarPrazos(prazos);
+  renderTabela();
+}
+function apagarTudo() {
+  if (confirm("Tem certeza que deseja apagar todos os prazos?")) {
+    localStorage.removeItem("prazos");
+    renderTabela();
+  }
+}
+document.getElementById("prazoForm").addEventListener("submit", function (e) {
+  e.preventDefault();
+  const desc = document.getElementById("descricao").value;
+  const cat = document.getElementById("categoria").value;
+  const venc = document.getElementById("vencimento").value;
+  let prazos = carregarPrazos();
+  if (indiceEdicao !== null) {
+    prazos[indiceEdicao] = { descricao: desc, categoria: cat, vencimento: venc, finalizado: prazos[indiceEdicao].finalizado };
+    indiceEdicao = null;
+  } else {
+    prazos.push({ descricao: desc, categoria: cat, vencimento: venc, finalizado: false });
+  }
+  salvarPrazos(prazos);
+  this.reset();
+  renderTabela();
+});
+document.getElementById("filtro").addEventListener("input", renderTabela);
+document.getElementById("importarCSV").addEventListener("change", function (e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    const linhas = e.target.result.split("\n");
+    const cabecalho = linhas[0].split(",");
+    const descIndex = cabecalho.indexOf("Descrição");
+    const catIndex = cabecalho.indexOf("Categoria");
+    const vencIndex = cabecalho.indexOf("Data de Vencimento");
+    const finalizadoIndex = cabecalho.indexOf("Finalizado");
+    const prazos = carregarPrazos();
+    for (let i = 1; i < linhas.length; i++) {
+      const cols = linhas[i].split(",");
+      if (cols.length >= 3) {
+        prazos.push({
+          descricao: cols[descIndex],
+          categoria: cols[catIndex],
+          vencimento: cols[vencIndex],
+          finalizado: cols[finalizadoIndex] === "true"
+        });
+      }
+    }
+    salvarPrazos(prazos);
+    renderTabela();
+  };
+  reader.readAsText(file);
+});
+function exportarCSV() {
+  const prazos = carregarPrazos();
+  const cabecalho = "Descrição,Categoria,Data de Vencimento,Finalizado\n";
+  const linhas = prazos.map(p => `${p.descricao},${p.categoria},${p.vencimento},${p.finalizado}`);
+  const csv = cabecalho + linhas.join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const link = document.createElement("a");
+  link.setAttribute("href", URL.createObjectURL(blob));
+  link.setAttribute("download", "prazos_exportados.csv");
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+function corPorCategoria(cat) {
+  const cores = {
+    Licença: "#ffd700", Laudo: "#87ceeb", Férias: "#ff69b4", Certificado: "#dda0dd", Contrato: "#90ee90", Outros: "#d3d3d3",
+  };
+  return cores[cat] || "#ffc0cb";
+}
+function renderizarCalendario() {
+  const calendarEl = document.getElementById("calendar");
+  const prazos = carregarPrazos();
+  const eventos = prazos.map(p => ({
+    title: p.descricao,
+    start: p.vencimento,
+    color: p.finalizado ? "#66cc66" : corPorCategoria(p.categoria),
+  }));
+  const calendar = new FullCalendar.Calendar(calendarEl, {
+    initialView: "dayGridMonth",
+    locale: "pt-br",
+    headerToolbar: {
+      left: "prev,next today",
+      center: "title",
+      right: "dayGridMonth,listMonth",
+    },
+    events: eventos,
+  });
+  calendar.render();
+}
+renderTabela();
+</script>
+</body>
+</html>
